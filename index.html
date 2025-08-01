@@ -632,7 +632,7 @@
                 this.currentMessage = '';
                 this.retryCount = 0;
                 this.maxRetries = 3;
-                this.requestTimeout = 10 * 60 * 1000; // Extended to 8 minutes timeout
+                this.requestTimeout = 10 * 60 * 1000; // 10 minutes timeout
                 this.progressInterval = null;
                 this.startTime = 0;
                 
@@ -682,15 +682,15 @@
                     console.log(`Starting request at: ${new Date().toISOString()}`);
                     console.log(`Timeout set for: ${this.requestTimeout / 1000} seconds`);
                     
+                    // CORS-friendly fetch configuration
                     const response = await fetch(this.webhookUrl, {
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json",
-                            "Accept": "application/json",
-                            // Add CORS headers if needed
-                            "Access-Control-Allow-Origin": "*",
-                            "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-                            "Access-Control-Allow-Headers": "Content-Type, Authorization"
+                            // Remove CORS headers from request - these should be set by server
+                            // "Access-Control-Allow-Origin": "*",
+                            // "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+                            // "Access-Control-Allow-Headers": "Content-Type, Authorization"
                         },
                         body: JSON.stringify({ 
                             message: this.currentMessage,
@@ -699,6 +699,7 @@
                         }),
                         signal: controller.signal,
                         mode: 'cors', // Explicitly set CORS mode
+                        credentials: 'omit', // Don't send credentials to avoid preflight issues
                         cache: 'no-cache'
                     });
                     
@@ -712,7 +713,7 @@
                     this.hideLoadingOverlay();
                     
                     console.log("Response status:", response.status);
-                    console.log("Response headers:", response.headers);
+                    console.log("Response headers:", [...response.headers.entries()]);
                     
                     if (response.ok) {
                         const data = await response.json();
@@ -734,14 +735,20 @@
                     this.hideLoadingOverlay();
                     this.isProcessing = false;
                     
+                    // Enhanced error handling with specific CORS detection
                     if (error.name === 'AbortError') {
-                        this.displayErrorMessage("⏱️ Request timeout (8 minutes). The AI is taking longer than expected. Please try again.", true);
-                    } else if (error.message.includes('Failed to fetch') || error.message.includes('CORS')) {
-                        this.displayErrorMessage("🌐 Connection error. This might be due to CORS restrictions or network issues.", true);
+                        this.displayErrorMessage("⏱️ Request timeout (10 minutes). The AI is taking longer than expected. Please try again.", true);
+                    } else if (error.message.includes('Failed to fetch') || 
+                               error.message.includes('CORS') || 
+                               error.message.includes('Access-Control') ||
+                               error.message.includes('Cross-Origin')) {
+                        this.displayErrorMessage("🌐 Connection error due to CORS policy. Please contact support to enable CORS for your domain.", true);
                     } else if (error.message.includes('HTTP')) {
                         this.displayErrorMessage(`🔌 Server error: ${error.message}`, true);
+                    } else if (error.message.includes('NetworkError') || error.message.includes('net::')) {
+                        this.displayErrorMessage("🌐 Network error. Please check your internet connection and try again.", true);
                     } else {
-                        this.displayErrorMessage("⚠️ Network error. Please check your connection and try again.", true);
+                        this.displayErrorMessage(`⚠️ Unexpected error: ${error.message}. Please try again.`, true);
                     }
                 }
             }
@@ -933,15 +940,15 @@
                 // Reset progress
                 this.progressFill.style.width = '0%';
                 
-                // Animate progress bar with improved timing for 8 minutes
+                // Animate progress bar with improved timing for 10 minutes
                 let progress = 0;
                 let elapsedTime = 0;
-                const maxTime = 8 * 60; // 8 minutes in seconds
+                const maxTime = 10 * 60; // 10 minutes in seconds
                 
                 const interval = setInterval(() => {
                     elapsedTime += 4; // Update every 4 seconds
                     
-                    // Calculate progress based on elapsed time but slow it down to reach ~90% by 8 minutes
+                    // Calculate progress based on elapsed time but slow it down to reach ~90% by 10 minutes
                     const timeBasedProgress = Math.min((elapsedTime / maxTime) * 90, 90);
                     
                     // Add some randomness to make it feel more organic
@@ -997,21 +1004,76 @@
                 }, 100);
             }
             
-            // Method to test webhook connectivity
+            // Enhanced connection test method
             async testConnection() {
+                console.log('Testing webhook connection...');
+                
                 try {
-                    const response = await fetch(this.webhookUrl, {
+                    // First try a simple OPTIONS request to check CORS
+                    const optionsResponse = await fetch(this.webhookUrl, {
                         method: 'OPTIONS',
-                        headers: {
-                            'Access-Control-Request-Method': 'POST',
-                            'Access-Control-Request-Headers': 'Content-Type'
-                        }
+                        mode: 'cors'
                     });
-                    console.log('Connection test:', response.status);
-                    return response.ok;
+                    
+                    console.log('OPTIONS response status:', optionsResponse.status);
+                    console.log('OPTIONS response headers:', [...optionsResponse.headers.entries()]);
+                    
+                    // Check if CORS headers are present
+                    const corsOrigin = optionsResponse.headers.get('Access-Control-Allow-Origin');
+                    const corsMethods = optionsResponse.headers.get('Access-Control-Allow-Methods');
+                    const corsHeaders = optionsResponse.headers.get('Access-Control-Allow-Headers');
+                    
+                    console.log('CORS Origin:', corsOrigin);
+                    console.log('CORS Methods:', corsMethods);
+                    console.log('CORS Headers:', corsHeaders);
+                    
+                    if (!corsOrigin) {
+                        console.warn('⚠️ No Access-Control-Allow-Origin header found. CORS may not be configured properly.');
+                        return false;
+                    }
+                    
+                    if (corsOrigin !== '*' && !corsOrigin.includes(window.location.origin)) {
+                        console.warn('⚠️ Current origin not allowed by CORS policy:', window.location.origin);
+                        return false;
+                    }
+                    
+                    console.log('✅ CORS appears to be configured correctly');
+                    return true;
+                    
                 } catch (error) {
-                    console.error('Connection test failed:', error);
+                    console.error('❌ Connection test failed:', error);
+                    
+                    if (error.message.includes('CORS') || error.message.includes('Failed to fetch')) {
+                        console.error('❌ CORS error detected during connection test');
+                    }
+                    
                     return false;
+                }
+            }
+            
+            // Method to fallback to CORS proxy if needed
+            async sendMessageWithFallback() {
+                try {
+                    // Try direct request first
+                    return await this.sendMessage();
+                } catch (error) {
+                    if (error.message.includes('CORS') || error.message.includes('Failed to fetch')) {
+                        console.warn('Direct request failed, attempting with CORS proxy...');
+                        
+                        // Try with CORS proxy (only for development)
+                        const originalUrl = this.webhookUrl;
+                        this.webhookUrl = `https://cors-anywhere.herokuapp.com/${originalUrl}`;
+                        
+                        try {
+                            const result = await this.sendMessage();
+                            this.webhookUrl = originalUrl; // Restore original URL
+                            return result;
+                        } catch (proxyError) {
+                            this.webhookUrl = originalUrl; // Restore original URL
+                            throw proxyError;
+                        }
+                    }
+                    throw error;
                 }
             }
         }
@@ -1019,13 +1081,32 @@
         // Initialize the AI Agent when page loads
         const aiAgent = new AIAgent();
         
-        // Test connection on load
-        window.addEventListener('load', () => {
-            aiAgent.testConnection().then(connected => {
-                if (!connected) {
-                    console.warn('Initial connection test failed. CORS or network issues may occur.');
-                }
-            });
+        // Enhanced connection test on load
+        window.addEventListener('load', async () => {
+            console.log('🚀 AI Agent initialized');
+            console.log('🌍 Current origin:', window.location.origin);
+            console.log('🔗 Webhook URL:', aiAgent.webhookUrl);
+            
+            const connected = await aiAgent.testConnection();
+            
+            if (connected) {
+                console.log('✅ Connection test passed - CORS is properly configured');
+            } else {
+                console.warn('❌ Connection test failed - CORS issues may occur');
+                console.log('💡 Possible solutions:');
+                console.log('1. Configure n8n CORS settings to allow origin:', window.location.origin);
+                console.log('2. Set N8N_CORS_ORIGIN=* in n8n environment variables');
+                console.log('3. Add CORS headers in your n8n workflow');
+            }
+        });
+        
+        // Add global error handler for unhandled promise rejections
+        window.addEventListener('unhandledrejection', function(event) {
+            console.error('Unhandled promise rejection:', event.reason);
+            if (event.reason && event.reason.message && 
+                (event.reason.message.includes('CORS') || event.reason.message.includes('Failed to fetch'))) {
+                console.error('🚨 CORS-related unhandled rejection detected');
+            }
         });
     </script>
 </body>
